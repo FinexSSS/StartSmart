@@ -18,8 +18,8 @@ import { useAuth, UserProfile } from "@/context/AuthContext";
 import { useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIndustries } from "@/hooks/useIndustries";
-import { saveIndustryToSupabase, deleteIndustryFromSupabase } from "@/services/industryAdminService";
-import { getAIFeatures, clearAIFeaturesCache, type AIFeaturesConfig, fetchAIIndustryEnhancement } from "@/services/aiService";
+import { saveIndustryToSupabase, deleteIndustryFromSupabase, seedTopIndustriesToSupabase } from "@/services/industryAdminService";
+import { getAIFeatures, clearAIFeaturesCache, type AIFeaturesConfig, fetchAIIndustryEnhancement, fetchAIIndustrySuggestions } from "@/services/aiService";
 import { supabase } from "@/integrations/supabase/client";
 import { seedIndustries } from "@/lib/seed_data";
 import { toast } from "sonner";
@@ -57,6 +57,7 @@ export default function AdminPage() {
   const [aiFeatures, setAiFeatures] = useState<AIFeaturesConfig>({});
   const [aiFeaturesDirty, setAiFeaturesDirty] = useState(false);
   const [seedLoading, setSeedLoading] = useState(false);
+  const [seedTop100Loading, setSeedTop100Loading] = useState(false);
 
   useEffect(() => {
     if (industriesSynced || !industriesFromDb?.length) return;
@@ -95,14 +96,41 @@ export default function AdminPage() {
   const [editForm, setEditForm] = useState<Partial<Industry>>({});
   const [showAddIndustry, setShowAddIndustry] = useState(false);
   const [newIndustry, setNewIndustry] = useState<Partial<Industry>>({ id: "", name: "", icon: "🏢", description: "", minBudget: 0, monthlyCostPerPerson: 0 });
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const [industryPage, setIndustryPage] = useState(1);
+  const INDUSTRIES_PER_PAGE = 20;
+  const [filterIndustrySource, setFilterIndustrySource] = useState<'all' | 'db' | 'ai'>('all');
+
+  const [userPage, setUserPage] = useState(1);
+  const USERS_PER_PAGE = 10;
+  const [filterUserRole, setFilterUserRole] = useState<'all' | 'admin' | 'user'>('all');
 
   // Computed
-  const filteredUsers = userSearch
-    ? users.filter(u => `${u.firstName} ${u.lastName} ${u.email} ${u.username}`.toLowerCase().includes(userSearch.toLowerCase()))
-    : users;
-  const filteredIndustries = search
-    ? industries.filter(i => i.name.toLowerCase().includes(search.toLowerCase()))
-    : industries;
+  const filteredUsers = users.filter(u => {
+    const searchMatch = !userSearch || `${u.firstName} ${u.lastName} ${u.email} ${u.username}`.toLowerCase().includes(userSearch.toLowerCase());
+    const roleMatch = filterUserRole === 'all' || u.role === filterUserRole;
+    return searchMatch && roleMatch;
+  });
+  
+  const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
+  const paginatedUsers = filteredUsers.slice(
+    (userPage - 1) * USERS_PER_PAGE,
+    userPage * USERS_PER_PAGE
+  );
+
+  const filteredIndustries = industries.filter(i => {
+    const searchMatch = !search || i.name.toLowerCase().includes(search.toLowerCase());
+    // Note: In admin page, 'industries' state is currently just from DB. 
+    // However, we might want to flag which ones were AI-created if we had that metadata.
+    // For now, let's keep search and pagination working.
+    return searchMatch;
+  });
+  
+  const totalIndustryPages = Math.max(1, Math.ceil(filteredIndustries.length / INDUSTRIES_PER_PAGE));
+  const paginatedIndustries = filteredIndustries.slice(
+    (industryPage - 1) * INDUSTRIES_PER_PAGE,
+    industryPage * INDUSTRIES_PER_PAGE
+  );
 
   const totalInfluencers = industries.reduce((s, i) => s + i.influencers.length, 0);
   const totalMaterials = industries.reduce((s, i) => s + i.materials.length, 0);
@@ -134,6 +162,20 @@ export default function AdminPage() {
       setActiveTab(validTab);
     }
   }, [activeTab, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    setIndustryPage(1);
+  }, [search, industries.length]);
+
+  useEffect(() => {
+    setUserPage(1);
+  }, [userSearch, filterUserRole]);
+
+  useEffect(() => {
+    if (industryPage > totalIndustryPages) {
+      setIndustryPage(totalIndustryPages);
+    }
+  }, [industryPage, totalIndustryPages]);
 
   const handleTabChange = (tab: AdminTab) => {
     setActiveTab(tab);
@@ -220,6 +262,28 @@ export default function AdminPage() {
     }
   };
 
+  const handleSeedTop100Industries = async () => {
+    setSeedTop100Loading(true);
+    try {
+      const result = await seedTopIndustriesToSupabase();
+      if (!result.ok) {
+        toast.error(`Failed to load top industries: ${result.error || "Unknown error"}`);
+        return;
+      }
+      if ((result.failed ?? 0) > 0) {
+        toast.warning(`Loaded ${result.count ?? 0} industries, ${result.failed} failed.`);
+      } else {
+        toast.success(`Loaded ${result.count ?? 100} top industries to database!`);
+      }
+      queryClient.invalidateQueries({ queryKey: ["industries"] });
+      setIndustriesSynced(false);
+    } catch (error) {
+      toast.error("Failed to load top industries" + (error instanceof Error ? `: ${error.message}` : ""));
+    } finally {
+      setSeedTop100Loading(false);
+    }
+  };
+
   const saveAIFeatures = async () => {
     const { error } = await supabase.from("admin_settings").upsert(
       { key: "ai_features", value: aiFeatures, updated_at: new Date().toISOString() },
@@ -248,34 +312,75 @@ export default function AdminPage() {
   };
 
   const [aiFetchingId, setAiFetchingId] = useState<string | null>(null);
+  const [isRefiningAll, setIsRefiningAll] = useState(false);
 
-  const handleFetchAIIndustryData = async (ind: Industry) => {
+  const handleFetchAIIndustryData = async (ind: Industry, skipSync = false) => {
     setAiFetchingId(ind.id);
     try {
       toast.info(`Fetching real-time 2026 data for ${ind.name}...`);
       const aiData = await fetchAIIndustryEnhancement(ind.name, Math.max(ind.minBudget, 5000), currentUser);
+      
+      console.log(`AI Data received for ${ind.name}:`, aiData);
+
+      if (!aiData || typeof aiData !== 'object') {
+        throw new Error("Invalid AI response format");
+      }
 
       const updatedInd: Industry = {
         ...ind,
+        icon: aiData.icon || ind.icon,
         description: aiData.description || ind.description,
         minBudget: aiData.minBudget || ind.minBudget,
         monthlyCostPerPerson: aiData.monthlyCostPerPerson || ind.monthlyCostPerPerson,
-        expenses: Array.isArray(aiData.expenses) ? aiData.expenses : ind.expenses,
-        influencers: Array.isArray(aiData.influencers) ? aiData.influencers : ind.influencers,
-        materials: Array.isArray(aiData.materials) ? aiData.materials : ind.materials,
-        resources: Array.isArray(aiData.resources) ? aiData.resources : ind.resources,
-        roadmap: Array.isArray(aiData.roadmap) ? aiData.roadmap : ind.roadmap
+        expenses: Array.isArray(aiData.expenses) && aiData.expenses.length > 0 ? aiData.expenses : ind.expenses,
+        influencers: Array.isArray(aiData.influencers) && aiData.influencers.length > 0 ? aiData.influencers : ind.influencers,
+        materials: Array.isArray(aiData.materials) && aiData.materials.length > 0 ? aiData.materials : ind.materials,
+        resources: Array.isArray(aiData.resources) && aiData.resources.length > 0 ? aiData.resources : ind.resources,
+        roadmap: Array.isArray(aiData.roadmap) && aiData.roadmap.length > 0 ? aiData.roadmap : ind.roadmap
       };
 
-      updateIndustry(ind.id, updatedInd);
-      toast.success(`Updated ${ind.name} with AI data! Save to database to persist.`);
+      // Immediate UI update
+      setIndustries(prev => prev.map(i => i.id === ind.id ? updatedInd : i));
+      
+      // Save to database
+      const { ok, error } = await saveIndustryToSupabase(updatedInd);
+      if (ok) {
+        if (!skipSync) {
+          toast.success(`Updated and saved ${ind.name} with AI data!`);
+          queryClient.invalidateQueries({ queryKey: ["industries"] });
+        }
+      } else {
+        console.error(`Supabase Save Error for ${ind.name}:`, error);
+        toast.error(`Failed to save AI data for ${ind.name}: ${error}`);
+      }
     } catch (err) {
       console.error("AI Fetch Error:", err);
       const msg = err instanceof Error ? err.message : "Possible JSON parse error or API timeout";
-      toast.error(`Failed to fetch AI data: ${msg.substring(0, 60)}...`);
+      toast.error(`AI Fetch failed for ${ind.name}: ${msg}`);
     } finally {
       setAiFetchingId(null);
     }
+  };
+
+  const handleRefineAllWithAI = async () => {
+    setIsRefiningAll(true);
+    toast.info("Starting batch refinement of all industries. This may take a minute...");
+    
+    // Use a copy to avoid issues if state updates mid-loop
+    const industriesToRefine = [...industries];
+    
+    for (const ind of industriesToRefine) {
+      await handleFetchAIIndustryData(ind, true); // skipSync=true to avoid redundant refreshes
+      // Add a small delay to prevent rate-limiting and connection exhaustion
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+    
+    // Final sync after all are done
+    setIndustriesSynced(false);
+    queryClient.invalidateQueries({ queryKey: ["industries"] });
+    
+    setIsRefiningAll(false);
+    toast.success("All industries refined and saved to database!");
   };
 
   const tabs: { key: AdminTab; label: string; icon: React.ElementType }[] = [
@@ -442,17 +547,22 @@ export default function AdminPage() {
                 placeholder="Search users by name, email, or username..." className="pl-10 bg-secondary border-border rounded-lg" />
             </div>
             <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 bg-secondary/50 p-1 rounded-lg border border-border">
+                {(['all', 'admin', 'user'] as const).map(role => (
+                  <button key={role} onClick={() => setFilterUserRole(role)}
+                    className={`text-[10px] uppercase font-bold px-3 py-1 rounded-md transition-all ${filterUserRole === role ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-secondary'}`}>
+                    {role}
+                  </button>
+                ))}
+              </div>
               <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-secondary text-sm text-muted-foreground">
                 <Users className="w-4 h-4" /> {filteredUsers.length}
-              </div>
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-destructive/10 text-sm text-destructive">
-                <Shield className="w-3.5 h-3.5" /> {adminCount} admins
               </div>
             </div>
           </div>
 
           <div className="space-y-2">
-            {filteredUsers.map((u, i) => (
+            {paginatedUsers.map((u, i) => (
               <motion.div key={u.username} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.03 }} className="neo-card">
                 <div className="flex items-start gap-4">
@@ -544,6 +654,25 @@ export default function AdminPage() {
               </motion.div>
             ))}
           </div>
+
+          {/* User Pagination Controls */}
+          {totalUserPages > 1 && (
+            <div className="flex items-center justify-between px-1 pt-2">
+              <p className="text-xs text-muted-foreground">
+                Showing {(userPage - 1) * USERS_PER_PAGE + 1}-
+                {Math.min(userPage * USERS_PER_PAGE, filteredUsers.length)} of {filteredUsers.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => setUserPage(p => Math.max(1, p - 1))} disabled={userPage === 1} className="rounded-lg text-xs">
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">Page {userPage} / {totalUserPages}</span>
+                <Button size="sm" variant="outline" onClick={() => setUserPage(p => Math.min(totalUserPages, p + 1))} disabled={userPage === totalUserPages} className="rounded-lg text-xs">
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -563,6 +692,14 @@ export default function AdminPage() {
             </Button>
             <Button onClick={saveAllIndustriesToDb} disabled={saveIndustriesLoading} className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg text-sm">
               {saveIndustriesLoading ? "Saving…" : "Save to database"}
+            </Button>
+            <Button onClick={handleRefineAllWithAI} disabled={isRefiningAll || !!aiFetchingId} variant="outline" className="border-accent/20 text-accent hover:bg-accent/10 rounded-lg text-sm">
+              <Zap className={`w-4 h-4 mr-1 ${isRefiningAll ? "animate-pulse" : ""}`} />
+              {isRefiningAll ? "Refining All…" : "Refine ALL with AI"}
+            </Button>
+            <Button onClick={handleSeedTop100Industries} disabled={seedTop100Loading} variant="outline" className="border-primary/20 text-primary hover:bg-primary/10 rounded-lg text-sm">
+              <Database className={`w-4 h-4 mr-1 ${seedTop100Loading ? "animate-pulse" : ""}`} />
+              {seedTop100Loading ? "Loading Top 100…" : "Load Top 100 Industries"}
             </Button>
             <Button onClick={handleSeedIndustries} disabled={seedLoading} variant="outline" className="border-accent/20 text-accent hover:bg-accent/10 rounded-lg text-sm">
               <RefreshCw className={`w-4 h-4 mr-1 ${seedLoading ? "animate-spin" : ""}`} />
@@ -584,8 +721,8 @@ export default function AdminPage() {
                   <div className="md:col-span-2"><Label className="text-xs text-muted-foreground">Description</Label><Input value={newIndustry.description} onChange={e => setNewIndustry(p => ({ ...p, description: e.target.value }))} placeholder="Short description" className="bg-secondary border-border rounded-lg mt-1" /></div>
                   <div><Label className="text-xs text-muted-foreground">Min Budget ($)</Label><Input type="number" value={newIndustry.minBudget} onChange={e => setNewIndustry(p => ({ ...p, minBudget: parseFloat(e.target.value) || 0 }))} className="bg-secondary border-border rounded-lg mt-1" /></div>
                 </div>
-                <div className="flex gap-2 mt-3">
-                  <Button onClick={addNewIndustry} size="sm" className="bg-primary text-primary-foreground rounded-lg"><Check className="w-3 h-3 mr-1" /> Create</Button>
+                <div className="flex gap-2 mt-3 flex-wrap">
+                  <Button onClick={addNewIndustry} size="sm" className="bg-primary text-primary-foreground rounded-lg"><Check className="w-3 h-3 mr-1" /> Create Manual</Button>
                   <Button onClick={() => setShowAddIndustry(false)} size="sm" variant="outline" className="rounded-lg"><X className="w-3 h-3 mr-1" /> Cancel</Button>
                 </div>
               </motion.div>
@@ -593,7 +730,7 @@ export default function AdminPage() {
           </AnimatePresence>
 
           {/* Industries */}
-          {filteredIndustries.map(ind => {
+          {paginatedIndustries.map(ind => {
             const isExpanded = expandedId === ind.id;
             return (
               <motion.div key={ind.id} layout className="neo-card">
@@ -629,7 +766,9 @@ export default function AdminPage() {
                       className="border-destructive/20 text-destructive hover:bg-destructive/10 text-xs rounded-lg">
                       <Trash2 className="w-3 h-3" />
                     </Button>
-                    {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                    <button onClick={() => { setExpandedId(isExpanded ? null : ind.id); setIndustrySubTab("expenses"); }} className="p-1 hover:bg-secondary rounded ml-2">
+                      {isExpanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                    </button>
                   </div>
                 </div>
 
@@ -754,6 +893,37 @@ export default function AdminPage() {
               </motion.div>
             );
           })}
+          {filteredIndustries.length > 0 && (
+            <div className="flex items-center justify-between px-1 pt-2">
+              <p className="text-xs text-muted-foreground">
+                Showing {(industryPage - 1) * INDUSTRIES_PER_PAGE + 1}-
+                {Math.min(industryPage * INDUSTRIES_PER_PAGE, filteredIndustries.length)} of {filteredIndustries.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIndustryPage((p) => Math.max(1, p - 1))}
+                  disabled={industryPage === 1}
+                  className="rounded-lg text-xs"
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Page {industryPage} / {totalIndustryPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIndustryPage((p) => Math.min(totalIndustryPages, p + 1))}
+                  disabled={industryPage === totalIndustryPages}
+                  className="rounded-lg text-xs"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

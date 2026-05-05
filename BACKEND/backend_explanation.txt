@@ -1,0 +1,86 @@
+STARTSMART BACKEND EXPLANATION
+============================
+
+Backend Technology Stack:
+----------------------
+1. Runtime: Node.js with Express.js
+2. Database: MongoDB (for document storage) + Supabase (for auth and real-time)
+3. AI Integration: OpenRouter API (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)
+4. API Style: RESTful endpoints with JSON responses
+
+How Backend Works:
+-----------------
+1. AI Service (ai-service.js):
+   - Central wrapper for all AI calls
+   - Uses OpenRouter API with google/gemini-2.0-flash-001 model
+   - Handles prompt engineering for real-time 2026 data
+   - Returns pure JSON responses (no markdown)
+   - Has fallback mechanisms when AI fails
+
+2. Feature Modules (team folders):
+   Each feature file exports functions that:
+   a) Validate input parameters
+   b) Call AI service with engineered prompts
+   c) Parse JSON response
+   d) Provide fallback data if AI fails
+   e) Return structured data
+
+3. Database Integration:
+   - MongoDB stores: users, industries, calculations, results
+   - Supabase handles: authentication, real-time updates
+   - Connection via db-connector.js (Team 3)
+
+4. API Endpoints Structure:
+   POST /api/budget           -> Team 1: Budget validation
+   GET  /api/industries       -> Team 1: Industry data
+   POST /api/feasibility      -> Team 1: Feasibility calculation
+   GET  /api/expenses         -> Team 1: Expense breakdown
+   GET  /api/influencers      -> Team 1: Influencer recommendations
+
+   GET  /api/materials        -> Team 2: Raw materials
+   POST /api/profit            -> Team 2: Profit estimation
+   GET  /api/recommendations  -> Team 2: Startup suggestions
+   GET  /api/dashboard        -> Team 2: Dashboard data
+   POST /api/roadmap          -> Team 2: Roadmap generation
+
+   GET  /api/admin/dashboard  -> Team 3: Admin panel
+   GET  /api/analytics        -> Team 3: Analytics data
+   GET  /api/resources        -> Team 3: Resource requirements
+   POST /api/db/query         -> Team 3: Database operations
+   GET  /api/risks            -> Team 3: Risk assessment
+
+   POST /api/break-even       -> Team 4: Break-even analysis
+   GET  /api/funding          -> Team 4: Funding sources
+   POST /api/swot             -> Team 4: SWOT analysis
+   POST /api/marketing        -> Team 4: Marketing budget
+   GET  /api/export/pdf       -> Team 4: PDF generation
+
+5. Data Flow:
+   User Input -> Validation -> AI Prompt -> OpenRouter API -> JSON Response -> Frontend Display
+                                               |
+                                               v
+                                         Fallback Data (if AI fails)
+
+6. Security:
+   - API key stored in environment variables
+   - Input sanitization on all endpoints
+   - JWT authentication via Supabase
+   - Rate limiting on AI calls
+
+7. Error Handling:
+   - Try-catch on all AI calls
+   - Fallback to static data when AI unavailable
+   - Graceful degradation of features
+   - User-friendly error messages
+
+8. Team Responsibilities:
+   Team 1: Core input handling and validation
+   Team 2: Business logic and calculations
+   Team 3: Data management and administration
+   Team 4: Analysis, export, and frontend integration
+
+For detailed implementation of each feature, see the individual files in:
+- GITHUBPUSH-INSTRUCTIONS/teammate1/
+- GITHUBPUSH-INSTRUCTIONS/teammate2/
+- GITHUBPUSH-INSTRUCTIONS/teammate3/
+- GITHUBPUSH-INSTRUCTIONS/teammate4/

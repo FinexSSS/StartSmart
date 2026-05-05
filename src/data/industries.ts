@@ -64,7 +64,7 @@ export const industries: Industry[] = [
     id: "clothing",
     name: "Clothing & Fashion",
     icon: "👗",
-    description: "Start your own clothing brand or boutique",
+    description: "Launch a clothing brand or boutique",
     minBudget: 5000,
     monthlyCostPerPerson: 800,
     expenses: [
@@ -107,7 +107,7 @@ export const industries: Industry[] = [
     id: "food",
     name: "Food & Restaurant",
     icon: "🍕",
-    description: "Launch a food business, restaurant, or catering service",
+    description: "Start a food business or restaurant",
     minBudget: 8000,
     monthlyCostPerPerson: 1200,
     expenses: [
@@ -150,7 +150,7 @@ export const industries: Industry[] = [
     id: "youtube",
     name: "YouTube / Content Creation",
     icon: "🎬",
-    description: "Start a YouTube channel or content creation business",
+    description: "Build a YouTube or content business",
     minBudget: 2000,
     monthlyCostPerPerson: 500,
     expenses: [
@@ -192,7 +192,7 @@ export const industries: Industry[] = [
     id: "cosmetics",
     name: "Cosmetics & Beauty",
     icon: "💄",
-    description: "Launch your own beauty or skincare brand",
+    description: "Launch a beauty or skincare brand",
     minBudget: 6000,
     monthlyCostPerPerson: 1000,
     expenses: [
@@ -235,7 +235,7 @@ export const industries: Industry[] = [
     id: "tech",
     name: "Tech / SaaS",
     icon: "💻",
-    description: "Build a tech startup or SaaS product",
+    description: "Build a tech startup or SaaS app",
     minBudget: 10000,
     monthlyCostPerPerson: 2000,
     expenses: [

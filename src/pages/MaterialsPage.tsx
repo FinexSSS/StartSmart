@@ -39,7 +39,7 @@ export default function MaterialsPage() {
             className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors text-xs font-semibold"
           >
             <Zap className={`w-3.5 h-3.5 ${isEnhancing ? "animate-pulse" : ""}`} />
-            {isEnhancing ? "Generating Genuine Insights..." : "Enhance with Gemini AI"}
+            {isEnhancing ? "Generating Genuine Insights..." : "Enhance with AI"}
           </button>
         )}
       </div>

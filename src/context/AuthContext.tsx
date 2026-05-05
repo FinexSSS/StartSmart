@@ -151,8 +151,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // New fetch or different user
+    const isFirstTime = fetchingUserId.current !== supabaseUser.id;
     fetchingUserId.current = supabaseUser.id;
-    setIsLoading(true);
+
+    if (isFirstTime && !user) {
+      setIsLoading(true);
+    }
 
     console.log("AuthContext: Starting NEW profile fetch for:", supabaseUser.id);
     const promise = fetchProfileAndRole(supabaseUser.id);
@@ -165,20 +169,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       let finalProfile = profileResult;
 
       if (!finalProfile) {
-        console.warn("AuthContext: No profile record found in database for", supabaseUser.id, "- using fallback from metadata.");
-        finalProfile = {
-          id: supabaseUser.id,
-          firstName: supabaseUser.user_metadata?.first_name || "",
-          lastName: supabaseUser.user_metadata?.last_name || "",
-          email: supabaseUser.email || "",
-          username: supabaseUser.user_metadata?.username || supabaseUser.email?.split("@")[0] || "user",
-          phone: supabaseUser.user_metadata?.phone || "",
-          dateOfBirth: "",
-          region: "",
-          profilePicture: null,
-          role: "user",
-          createdAt: supabaseUser.created_at || new Date().toISOString(),
-        };
+        // Keep prior user role/profile for this account if profile lookup temporarily fails.
+        if (user?.id === supabaseUser.id) {
+          console.warn("AuthContext: Profile fetch returned null; preserving current user role/state.");
+          finalProfile = user;
+        } else {
+          console.warn("AuthContext: No profile record found in database for", supabaseUser.id, "- using fallback from metadata.");
+          finalProfile = {
+            id: supabaseUser.id,
+            firstName: supabaseUser.user_metadata?.first_name || "",
+            lastName: supabaseUser.user_metadata?.last_name || "",
+            email: supabaseUser.email || "",
+            username: supabaseUser.user_metadata?.username || supabaseUser.email?.split("@")[0] || "user",
+            phone: supabaseUser.user_metadata?.phone || "",
+            dateOfBirth: "",
+            region: "",
+            profilePicture: null,
+            role: "user",
+            createdAt: supabaseUser.created_at || new Date().toISOString(),
+          };
+        }
       }
 
       // Only set user if we are still looking for the same ID
@@ -189,7 +199,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error("AuthContext: Error in loadUser processing:", error);
 
-      // Even on error, if we have a supabaseUser, try to provide a fallback to prevent lockouts
       const fallback: UserProfile = {
         id: supabaseUser.id,
         firstName: "",
@@ -203,17 +212,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role: "user",
         createdAt: new Date().toISOString(),
       };
+
       if (fetchingUserId.current === supabaseUser.id) {
-        setUser(fallback);
+        if (user && user.id === supabaseUser.id) {
+          // Keep current user state to avoid flickering to role 'user'
+          console.warn("AuthContext: Profile fetch failed, retaining current user state.");
+        } else {
+          setUser(fallback);
+        }
       }
-      return fallback;
+      return user || fallback;
     } finally {
       if (fetchingUserId.current === supabaseUser.id) {
         fetchPromiseRef.current = null;
         setIsLoading(false);
       }
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(

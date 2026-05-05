@@ -12,6 +12,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useIndustries } from "@/hooks/useIndustries";
 import { supabase } from "@/integrations/supabase/client";
 import { fetchAIIndustryEnhancement, fetchAIInfluencerTips, AIInfluencerTipsResult } from "@/services/aiService";
+import { saveIndustryToSupabase } from "@/services/industryAdminService";
+import { useQueryClient } from "@tanstack/react-query";
 
 export interface WorkshopItem {
   id: string;
@@ -102,6 +104,7 @@ function useDebouncedSupabaseUpdate(
 export function AppProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const { data: industries = [] } = useIndustries();
+  const queryClient = useQueryClient();
 
   const [projectId, setProjectId] = useState<string | null>(null);
   const [budget, setBudgetState] = useState(0);
@@ -114,10 +117,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [influencerTips, setInfluencerTips] = useState<AIInfluencerTipsResult | null>(null);
   const [isEnhancing, setIsEnhancing] = useState(false);
 
-  const selectedIndustry =
-    industries.length > 0 && selectedIndustryId
-      ? industries.find((i) => i.id === selectedIndustryId) ?? null
-      : null;
+  const [selectedIndustry, setSelectedIndustryState] = useState<Industry | null>(null);
+
+  // Sync selectedIndustry with industries list when it changes
+  useEffect(() => {
+    if (selectedIndustryId && industries.length > 0) {
+      const found = industries.find(i => i.id === selectedIndustryId);
+      if (found) {
+        setSelectedIndustryState(found);
+      }
+    }
+  }, [selectedIndustryId, industries]);
 
   const { schedule: scheduleProjectUpdate } = useDebouncedSupabaseUpdate(
     projectId,
@@ -315,13 +325,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!selectedIndustry) return;
     setIsEnhancing(true);
     try {
-      const [enhancedData, tips] = await Promise.all([
-        fetchAIIndustryEnhancement(selectedIndustry.name, budget, user),
-        fetchAIInfluencerTips(selectedIndustry.name, user)
-      ]);
+      const enhancedData = await fetchAIIndustryEnhancement(selectedIndustry.name, budget, user);
 
       if (enhancedData) {
-        setEnhancedIndustry({
+        const fullEnhanced: Industry = {
           ...selectedIndustry,
           description: enhancedData.description,
           minBudget: enhancedData.minBudget,
@@ -330,22 +337,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
           resources: enhancedData.resources,
           materials: enhancedData.materials,
           influencers: enhancedData.influencers,
-          marketingChannels: enhancedData.marketingChannels
-        });
+          roadmap: enhancedData.roadmap || [],
+        };
+        setEnhancedIndustry(fullEnhanced);
+        setSelectedIndustryState(fullEnhanced);
+        const { ok, error } = await saveIndustryToSupabase(fullEnhanced);
+        if (!ok) {
+          console.error("Failed to persist AI-enhanced industry:", error);
+        } else {
+          queryClient.invalidateQueries({ queryKey: ["industries"] });
+        }
       }
-      if (tips) {
-        setInfluencerTips(tips);
+      if (enhancedData?.influencerTips) {
+        setInfluencerTips(enhancedData.influencerTips);
       }
     } catch (error) {
       console.error("Failed to enhance industry with AI:", error);
     } finally {
       setIsEnhancing(false);
     }
-  }, [selectedIndustry, budget]);
+  }, [selectedIndustry, budget, user, queryClient]);
 
   const setSelectedIndustry = useCallback(
     (i: Industry | null) => {
       setSelectedIndustryId(i?.id ?? null);
+      setSelectedIndustryState(i);
       resetEnhancement();
       scheduleProjectUpdate();
     },

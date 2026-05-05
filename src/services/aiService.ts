@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import * as openRouter from "./openrouterService";
+import { TOP_INDUSTRY_CATALOG } from "@/data/topIndustriesCatalog";
 
 export type AIFeatureKey = "feasibility" | "swot" | "risk" | "recommendations" | "breakeven" | "marketing" | "influencer" | "business_plan" | "roadmap";
 
@@ -98,7 +99,7 @@ function buildRiskPrompt(input: any, userProfile?: any): string {
   - "category" (string): e.g. "Capital Limitation", "Market Competition".
   - "score" (number 0-100): risk severity.
   - "level" ("High"|"Medium"|"Low").
-  - "description" (string): one sentence.
+  - "description" (string): one sentence (max 20 words).
   - "mitigation" (string): one sentence advice.
 
   Reply with only valid JSON: {"risks": [...]}, no markdown.`;
@@ -149,15 +150,27 @@ function buildIndustryDataPrompt(industryName: string, budget: number, userProfi
   const context = userProfile ? `The user "${userProfile.firstName} ${userProfile.lastName}" is starting this venture in ${userProfile.region}. ` : "";
   return `You are a market research analyst. ${context}
   CRITICAL: Use your web search capabilities for REAL-TIME 2026 data. 
-  Find GENUINE, REAL-WORLD information for the "${industryName}" industry in this region.
-  Provide a comprehensive dataset as JSON:
-  - "description" (string): Current, realistic market overview for 2026.
+  Find GENUINE, REAL-WORLD information for the "${industryName}" industry in this region. 
+  You MUST NOT use placeholder data like "John Doe", "Supplier A", or "General Tool".
+  - Influencers MUST be REAL, specific creators on Instagram/TikTok/YouTube with their actual handles.
+  - Materials MUST specify REAL suppliers (e.g., "Alibaba", "Uline", "Specific Local Wholesale").
+  - Resources MUST be REAL tools or software (e.g., "Shopify", "QuickBooks", "Notion", "AWS").
+  - Roadmap MUST contain highly specific, REAL actionable steps, avoiding generic advice.
+  
+  IMPORTANT BUDGET CONTEXT: The user's target budget is $${budget}.
+  - If this is a LOW budget (e.g., under $5,000 - $10,000), adapt the entire response for a SOLO founder, lean startup, or side-hustle. Prioritize free/cheap tools, bootstrapping, organic/low-cost marketing, and bare minimum essential expenses.
+  - If the budget is HIGH, structure it for a full team with premium software, office space, and scalable infrastructure.
+
+  Provide a comprehensive dataset as JSON matching this budget context:
+  - "icon" (string): A single suitable emoji representing this industry or business idea.
+  - "description" (string): Current, realistic market overview for 2026, explicitly tailored to a $${budget} budget approach. Minimal necessary information only (max 10 words).
   - "minBudget" (number): Realistic minimum budget based on 2026 market rates in this region.
   - "monthlyCostPerPerson" (number): Realistic average monthly salary in this region/niche.
   - "expenses" (array of {category: string, amount: number, description: string, isMonthly: boolean}): 5-8 genuine line items based on 2026 pricing.
   - "resources" (array of {name: string, type: string, monthlyCost: number, oneTimeCost: number, description: string, essential: boolean}): 5-8 REAL tools or services (e.g., specific SaaS names) with 2026 pricing.
   - "materials" (array of {name: string, supplier: string, estimatedCost: number, unit: string, notes: string}): 3-5 key raw materials with REAL supplier categories.
   - "influencers" (array of {name: string, platform: string, followers: string, charge: number, specialty: string}): 3-5 GENUINE, REAL influencers (provide their real names or handles) relevant to this niche and region with their REAL estimated rates.
+  - "influencerTips": { "generalStrategy": string, "platformFocus": string[], "collaborationIdeas": string[], "genuineTips": string[] }
   - "marketingChannels" (array of {channel: string, percentage: number, description: string}): 4-6 REAL marketing channels with 2026 budget allocations.
   - "roadmap" (array of {step: number, title: string, description: string, duration: string, cost: number}): 5-8 steps for a 12-month timeline.
 
@@ -182,7 +195,7 @@ Return a JSON object with a "suggestions" key containing an array of 5 objects:
     {
       "name": "Industry Name",
       "icon": "Emoji",
-      "description": "Brief description of why this is viable in 2026",
+      "description": "Brief description of why this is viable in 2026 (Minimal necessary information only, max 10 words)",
       "minBudget": 5000
     }
   ]
@@ -242,6 +255,90 @@ function extractJson(text: string): string {
   }
 }
 
+function stripControlCharacters(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+}
+
+function removeTrailingCommas(text: string): string {
+  return text.replace(/,\s*([}\]])/g, "$1");
+}
+
+function extractBalancedJson(text: string): string | null {
+  let start = -1;
+  let stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (start === -1) {
+      if (ch === "{" || ch === "[") {
+        start = i;
+        stack.push(ch === "{" ? "}" : "]");
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{" || ch === "[") {
+      stack.push(ch === "{" ? "}" : "]");
+      continue;
+    }
+
+    if (ch === "}" || ch === "]") {
+      const expected = stack.pop();
+      if (expected !== ch) {
+        return null;
+      }
+      if (stack.length === 0) {
+        return text.slice(start, i + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseLenientJson<T>(text: string): T {
+  const attempts = [
+    text.trim(),
+    extractJson(text),
+    extractBalancedJson(text) ?? "",
+  ]
+    .filter(Boolean)
+    .map(stripControlCharacters)
+    .flatMap((candidate) => [candidate, removeTrailingCommas(candidate)]);
+
+  let lastError: unknown = null;
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to parse JSON response");
+}
+
 async function invokeAI<T>(type: string, input: any, userProfile?: any): Promise<T> {
   let prompt = "";
   switch (type) {
@@ -275,8 +372,14 @@ async function invokeAI<T>(type: string, input: any, userProfile?: any): Promise
 
   try {
     const raw = await openRouter.callOpenRouter(prompt);
-    const clean = extractJson(raw);
-    return JSON.parse(clean) as T;
+    try {
+      return parseLenientJson<T>(raw);
+    } catch (firstError) {
+      // Retry once: OpenRouter free models may occasionally emit malformed JSON.
+      console.warn("AI JSON parse failed, retrying once:", firstError);
+      const retryRaw = await openRouter.callOpenRouter(prompt);
+      return parseLenientJson<T>(retryRaw);
+    }
   } catch (error) {
     console.error("OpenRouter AI failed:", error);
     throw error;
@@ -290,9 +393,36 @@ export interface AIIndustrySuggestion {
   minBudget: number;
 }
 
-export async function fetchAIIndustrySuggestions(budget: number, userProfile?: any): Promise<AIIndustrySuggestion[]> {
-  const result = await invokeAI<{ suggestions: AIIndustrySuggestion[] }>("industry_suggestions", { budget }, userProfile);
-  return result.suggestions;
+function scoreSuggestion(
+  suggestion: AIIndustrySuggestion,
+  budget: number,
+  preferenceText?: string
+): number {
+  const target = Math.max(budget, 1);
+  const budgetFit = 1 - Math.min(Math.abs(target - suggestion.minBudget) / Math.max(target, suggestion.minBudget, 1), 1);
+  const normalizedPref = (preferenceText ?? "").toLowerCase().trim();
+
+  let preferenceBoost = 0;
+  if (normalizedPref) {
+    const terms = normalizedPref.split(/\s+/).filter(Boolean);
+    const haystack = `${suggestion.name} ${suggestion.description}`.toLowerCase();
+    const matches = terms.filter((term) => haystack.includes(term)).length;
+    preferenceBoost = Math.min(matches / Math.max(terms.length, 1), 1);
+  }
+
+  return budgetFit * 0.75 + preferenceBoost * 0.25;
+}
+
+export async function fetchAIIndustrySuggestions(
+  budget: number,
+  userProfile?: any,
+  preferenceText?: string
+): Promise<AIIndustrySuggestion[]> {
+  const pool = TOP_INDUSTRY_CATALOG.slice(0, 100);
+  const sorted = [...pool].sort(
+    (a, b) => scoreSuggestion(b, budget, preferenceText) - scoreSuggestion(a, budget, preferenceText)
+  );
+  return sorted.slice(0, 8);
 }
 
 export async function fetchAIFeasibility(input: {
@@ -357,6 +487,7 @@ export async function fetchAIInfluencerTips(industryName: string, userProfile?: 
 }
 
 export interface AIIndustryEnhancementResult {
+  icon?: string;
   description: string;
   minBudget: number;
   monthlyCostPerPerson: number;
@@ -366,6 +497,7 @@ export interface AIIndustryEnhancementResult {
   influencers: any[];
   marketingChannels: { channel: string; percentage: number; description: string }[];
   roadmap: { step: number; title: string; description: string; duration: string; cost: number }[];
+  influencerTips?: AIInfluencerTipsResult;
 }
 
 export async function fetchAIIndustryEnhancement(industryName: string, budget: number, userProfile?: any): Promise<AIIndustryEnhancementResult> {

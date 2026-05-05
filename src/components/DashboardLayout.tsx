@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
@@ -51,7 +52,16 @@ function DashboardSidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const navItems = user?.role === "admin"
+  // Use a ref or state to keep track of the last known role to avoid flickering
+  const [lastKnownRole, setLastKnownRole] = useState<string | null>(user?.role || null);
+  
+  useEffect(() => {
+    if (user?.role) {
+      setLastKnownRole(user.role);
+    }
+  }, [user?.role]);
+
+  const navItems = (user?.role || lastKnownRole) === "admin"
     ? adminNavItems
     : userNavItems;
 
